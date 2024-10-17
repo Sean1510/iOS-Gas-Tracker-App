@@ -1,0 +1,205 @@
+import SwiftUI
+import Combine
+
+// MARK: - Models
+
+struct User: Codable {
+    let id: Int
+    let username: String
+    let token: String
+}
+
+struct Vehicle: Codable, Identifiable {
+    let id: Int
+    let vin: String
+    let make: String
+    let model: String
+    let year: Int
+    var currentMileage: Int
+}
+
+struct FuelUp: Codable, Identifiable {
+    let id: Int
+    let vehicleId: Int
+    let date: Date
+    let mileage: Int
+    let liters: Double
+    let pricePerLiter: Double
+    let totalCost: Double
+    let gasStation: String
+    let isFullTank: Bool
+}
+
+// MARK: - API Client
+
+class APIClient {
+    static let shared = APIClient()
+    private let baseURL = "https://your-netlify-app.netlify.app/.netlify/functions/"
+    private var cancellables = Set<AnyCancellable>()
+    
+    func login(username: String, password: String) -> AnyPublisher<User, Error> {
+        let url = URL(string: baseURL + "login")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let body = ["username": username, "password": password]
+        request.httpBody = try? JSONEncoder().encode(body)
+        
+        return URLSession.shared.dataTaskPublisher(for: request)
+            .map(\.data)
+            .decode(type: User.self, decoder: JSONDecoder())
+            .receive(on: DispatchQueue.main)
+            .eraseToAnyPublisher()
+    }
+    
+    func getVehicles(token: String) -> AnyPublisher<[Vehicle], Error> {
+        let url = URL(string: baseURL + "getVehicles")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        return URLSession.shared.dataTaskPublisher(for: request)
+            .map(\.data)
+            .decode(type: [Vehicle].self, decoder: JSONDecoder())
+            .receive(on: DispatchQueue.main)
+            .eraseToAnyPublisher()
+    }
+    
+    // Implement other API methods (addVehicle, getFuelUps, addFuelUp) similarly
+}
+
+// MARK: - View Models
+
+class AuthViewModel: ObservableObject {
+    @Published var user: User?
+    @Published var isAuthenticated = false
+    @Published var error: String?
+    
+    private var cancellables = Set<AnyCancellable>()
+    
+    func login(username: String, password: String) {
+        APIClient.shared.login(username: username, password: password)
+            .sink(receiveCompletion: { completion in
+                if case .failure(let error) = completion {
+                    self.error = error.localizedDescription
+                }
+            }, receiveValue: { user in
+                self.user = user
+                self.isAuthenticated = true
+            })
+            .store(in: &cancellables)
+    }
+    
+    func logout() {
+        user = nil
+        isAuthenticated = false
+    }
+}
+
+class VehiclesViewModel: ObservableObject {
+    @Published var vehicles: [Vehicle] = []
+    @Published var error: String?
+    
+    private var cancellables = Set<AnyCancellable>()
+    
+    func fetchVehicles(token: String) {
+        APIClient.shared.getVehicles(token: token)
+            .sink(receiveCompletion: { completion in
+                if case .failure(let error) = completion {
+                    self.error = error.localizedDescription
+                }
+            }, receiveValue: { vehicles in
+                self.vehicles = vehicles
+            })
+            .store(in: &cancellables)
+    }
+    
+    // Implement addVehicle method
+}
+
+// MARK: - Views
+
+struct LoginView: View {
+    @StateObject private var authVM = AuthViewModel()
+    @State private var username = ""
+    @State private var password = ""
+    
+    var body: some View {
+        VStack {
+            TextField("Username", text: $username)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+            SecureField("Password", text: $password)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+            Button("Login") {
+                authVM.login(username: username, password: password)
+            }
+            if let error = authVM.error {
+                Text(error)
+                    .foregroundColor(.red)
+            }
+        }
+        .padding()
+    }
+}
+
+struct DashboardView: View {
+    @StateObject private var vehiclesVM = VehiclesViewModel()
+    @Binding var user: User
+    
+    var body: some View {
+        NavigationView {
+            List(vehiclesVM.vehicles) { vehicle in
+                NavigationLink(destination: VehicleDetailView(vehicle: vehicle)) {
+                    VStack(alignment: .leading) {
+                        Text("\(vehicle.year) \(vehicle.make) \(vehicle.model)")
+                        Text("VIN: \(vehicle.vin)")
+                            .font(.caption)
+                    }
+                }
+            }
+            .navigationTitle("My Vehicles")
+            .navigationBarItems(trailing: Button("Add Vehicle") {
+                // Show add vehicle form
+            })
+        }
+        .onAppear {
+            vehiclesVM.fetchVehicles(token: user.token)
+        }
+    }
+}
+
+struct VehicleDetailView: View {
+    let vehicle: Vehicle
+    
+    var body: some View {
+        VStack {
+            Text("\(vehicle.year) \(vehicle.make) \(vehicle.model)")
+                .font(.title)
+            Text("VIN: \(vehicle.vin)")
+            Text("Current Mileage: \(vehicle.currentMileage) km")
+            
+            // Add buttons for viewing fuel-up history and adding new fuel-up
+        }
+        .navigationTitle("Vehicle Details")
+    }
+}
+
+// MARK: - Main App
+
+@main
+struct FuelTrackerApp: App {
+    @StateObject private var authVM = AuthViewModel()
+    
+    var body: some Scene {
+        WindowGroup {
+            if authVM.isAuthenticated {
+                DashboardView(user: Binding(
+                    get: { authVM.user! },
+                    set: { authVM.user = $0 }
+                ))
+            } else {
+                LoginView()
+            }
+        }
+    }
+}
